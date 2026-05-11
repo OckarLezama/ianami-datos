@@ -51,8 +51,10 @@
 
   // Pre-pobla con arrays vacíos: si filterByPeriod corriera antes
   // de tiempo, no truena con "Cannot convert undefined or null".
-  Object.keys(CSV_FILES).forEach(k => {
-    if (!Array.isArray(window.DB[k])) window.DB[k] = [];
+ Object.keys(CSV_FILES).forEach(k => {
+    if (typeof window.DB[k] !== 'object' || window.DB[k] === null || Array.isArray(window.DB[k])) {
+      window.DB[k] = {};
+    }
   });
 
   window.IANAMI_READY = false;
