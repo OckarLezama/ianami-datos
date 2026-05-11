@@ -1,290 +1,270 @@
-/* ============================================================ 
- *  IA-NAMI · loader.js
- *  Carga automática de 15 CSVs desde GitHub → window.DB
- *  Paleta institucional CDMX 2024–2030
- *  Sin dependencias del HTML existente (auto-inyecta UI + PapaParse)
- * ============================================================ */
+/**
+ * loader.js — IA-NAMI (Huejotzingo, Puebla)
+ * ────────────────────────────────────────────────────────────────
+ * Responsabilidades:
+ *   1. Cargar CSVs desde GitHub de forma asíncrona (PapaParse).
+ *   2. Poblar `window.DB` con los datos parseados.
+ *   3. BLOQUEAR `refreshDashboard()` hasta que los datos estén listos
+ *      (encolando llamadas hechas antes de tiempo).
+ *   4. Disparar el evento `ianami-loaded` al completar.
+ *
+ * ⚠ CAMBIO REQUERIDO EN EL HTML (línea ~1232):
+ *      let DB = {};        ❌  no compartible entre <script>
+ *      window.DB = {};     ✅  obligatorio
+ *
+ * ORDEN DE CARGA EN EL HTML (importante):
+ *   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+ *   <script src="loader.js"></script>          ← debe ir ANTES del script principal
+ *   <script> ... tu HTML/lógica del dashboard ... </script>
+ *
+ * Si loader.js NO va antes del <script> principal, el interceptor
+ * de `refreshDashboard` no podrá engancharse a tiempo.
+ * ────────────────────────────────────────────────────────────────
+ */
 
 (function () {
   'use strict';
 
-  // ---------- Configuración ----------
-  const GITHUB_BASE =
-    'https://raw.githubusercontent.com/OckarLezama/ianami-datos/refs/heads/main/';
+  // ════════════════════════════════════════════════════════════════
+  // CONFIGURACIÓN  — ajusta nombres de archivo a tu repo
+  // ════════════════════════════════════════════════════════════════
+  const GITHUB_USER   = 'OckarLezama';
+  const GITHUB_REPO   = 'Datos';
+  const GITHUB_BRANCH = 'main';
+  const BASE_URL = `https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/`;
 
-  const CSV_FILES = [
-    'Presentados.csv',
-    'Rescatados.csv',
-    'Canalizados.csv',
-    'Retornados.csv',
-    'Extranjeros_recibidos.csv',
-    'Mexicanos_Recibidos.csv',
-    'Encuentros.csv',
-    'Inadmisiones.csv',
-    'Condicion_de_Estancia.csv',
-    'Internaciones.csv',
-    'Motivo_de_Estancia.csv',
-    'Caravanas_2019_2026.csv',
-    'Estados_Frontera.csv',
-    'Cinturones_Contencion.csv',
-    'Centro_Coordinador_Operaciones.csv'
-  ];
-
-  // Paleta institucional CDMX
-  const COLORS = {
-    rojo:  '#B66666',
-    arena: '#BDB58D',
-    verde: '#778E88',
-    crema: '#E5E2D3',
-    gris:  '#808080'
+  // Clave en DB  →  nombre del archivo CSV en el repo
+  const CSV_FILES = {
+    beneficiarios: 'beneficiarios.csv',
+    operadores:    'operadores.csv',
+    secciones:     'secciones.csv'
+    // agrega los que falten…
   };
 
-  const PAPA_CDN =
-    'https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js';
+  const FETCH_TIMEOUT_MS = 30000; // 30 s por archivo
+  const FLUSH_MAX_ATTEMPTS = 20;  // espera hasta 1 s a que el HTML defina refreshDashboard
 
-  // Inicializa el contenedor global
+  // ════════════════════════════════════════════════════════════════
+  // ESTADO GLOBAL
+  // ════════════════════════════════════════════════════════════════
   window.DB = window.DB || {};
 
-  // ---------- UI: overlay + barra de progreso ----------
-  function createProgressUI() {
-    const overlay = document.createElement('div');
-    overlay.id = 'ianami-loader-overlay';
-    overlay.style.cssText = `
-      position: fixed; inset: 0;
-      background: rgba(229, 226, 211, 0.97);
-      z-index: 2147483647;
-      display: flex; align-items: center; justify-content: center;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      transition: opacity .4s ease;
-    `;
+  // Pre-pobla con arrays vacíos: si filterByPeriod corriera antes
+  // de tiempo, no truena con "Cannot convert undefined or null".
+  Object.keys(CSV_FILES).forEach(k => {
+    if (!Array.isArray(window.DB[k])) window.DB[k] = [];
+  });
 
-    const card = document.createElement('div');
-    card.style.cssText = `
-      width: min(560px, 88vw);
-      background: #ffffff;
-      border-radius: 12px;
-      padding: 28px 32px 24px;
-      box-shadow: 0 12px 40px rgba(0,0,0,.14);
-      border-top: 4px solid ${COLORS.rojo};
-    `;
+  window.IANAMI_READY = false;
+  window.IANAMI_LOAD_ERROR = null;
 
-    const title = document.createElement('div');
-    title.textContent = 'IA-NAMI · Cargando datos';
-    title.style.cssText = `
-      font-size: 17px; font-weight: 600;
-      color: ${COLORS.verde}; letter-spacing: .3px;
-      margin-bottom: 4px;
-    `;
+  const pendingRefreshCalls = [];   // cola de llamadas tempranas
+  let realRefreshDashboard = null;  // función real definida por el HTML
 
-    const subtitle = document.createElement('div');
-    subtitle.id = 'ianami-loader-subtitle';
-    subtitle.textContent = 'Inicializando…';
-    subtitle.style.cssText = `
-      font-size: 13px; color: ${COLORS.gris};
-      margin-bottom: 18px;
-    `;
-
-    const barWrap = document.createElement('div');
-    barWrap.style.cssText = `
-      width: 100%; height: 10px;
-      background: ${COLORS.crema};
-      border-radius: 6px; overflow: hidden;
-      border: 1px solid rgba(0,0,0,.04);
-    `;
-
-    const bar = document.createElement('div');
-    bar.id = 'ianami-loader-bar';
-    bar.style.cssText = `
-      height: 100%; width: 0%;
-      background: linear-gradient(90deg, ${COLORS.verde} 0%, ${COLORS.arena} 100%);
-      transition: width .25s ease;
-    `;
-    barWrap.appendChild(bar);
-
-    const stats = document.createElement('div');
-    stats.style.cssText = `
-      display: flex; justify-content: space-between;
-      margin-top: 10px;
-      font-size: 12px; color: ${COLORS.gris};
-      font-variant-numeric: tabular-nums;
-    `;
-    stats.innerHTML =
-      `<span id="ianami-loader-count">0 / ${CSV_FILES.length}</span>` +
-      `<span id="ianami-loader-pct">0%</span>`;
-
-    const log = document.createElement('div');
-    log.id = 'ianami-loader-log';
-    log.style.cssText = `
-      margin-top: 16px; max-height: 96px; overflow-y: auto;
-      font-size: 11px; color: ${COLORS.gris};
-      font-family: 'SF Mono', Monaco, Consolas, 'Courier New', monospace;
-      line-height: 1.65;
-      border-top: 1px dashed ${COLORS.crema};
-      padding-top: 10px;
-    `;
-
-    card.append(title, subtitle, barWrap, stats, log);
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-
-    return {
-      overlay,
-      bar:      document.getElementById('ianami-loader-bar'),
-      subtitle: document.getElementById('ianami-loader-subtitle'),
-      count:    document.getElementById('ianami-loader-count'),
-      pct:      document.getElementById('ianami-loader-pct'),
-      log:      document.getElementById('ianami-loader-log')
-    };
-  }
-
-  function updateProgress(ui, loaded, total, file, status) {
-    const pct = Math.round((loaded / total) * 100);
-    ui.bar.style.width = pct + '%';
-    ui.count.textContent = `${loaded} / ${total}`;
-    ui.pct.textContent = pct + '%';
-
-    if (file) {
-      ui.subtitle.textContent = `Procesando: ${file}`;
-      const line = document.createElement('div');
-      const icon  = status === 'ok' ? '✓' : status === 'err' ? '✗' : '·';
-      const color = status === 'ok' ? COLORS.verde : status === 'err' ? COLORS.rojo : COLORS.gris;
-      line.innerHTML =
-        `<span style="color:${color};font-weight:700;">${icon}</span> ${file}`;
-      ui.log.appendChild(line);
-      ui.log.scrollTop = ui.log.scrollHeight;
+  // ════════════════════════════════════════════════════════════════
+  // INTERCEPTOR DE refreshDashboard
+  // ────────────────────────────────────────────────────────────────
+  // Instalamos getter/setter en window.refreshDashboard ANTES de que
+  // el HTML declare la función. Cuando el HTML hace
+  //     function refreshDashboard() { … }
+  // el motor JS asigna esa función a window.refreshDashboard, lo que
+  // dispara el setter de abajo y guarda la referencia real. Cualquier
+  // llamada externa pasa por el getter, que devuelve nuestro wrapper.
+  // ════════════════════════════════════════════════════════════════
+  Object.defineProperty(window, 'refreshDashboard', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return function refreshDashboard_wrapper(...args) {
+        if (!window.IANAMI_READY) {
+          console.log('[IA-NAMI] ⏳ refreshDashboard encolada (DB cargando)…');
+          pendingRefreshCalls.push(args);
+          return;
+        }
+        if (typeof realRefreshDashboard !== 'function') {
+          console.warn('[IA-NAMI] refreshDashboard llamada pero aún no definida');
+          return;
+        }
+        try {
+          return realRefreshDashboard.apply(this, args);
+        } catch (err) {
+          console.error('[IA-NAMI] Error en refreshDashboard:', err);
+          throw err;
+        }
+      };
+    },
+    set(fn) {
+      realRefreshDashboard = fn;
     }
-  }
+  });
 
-  function dismissUI(ui, ok) {
-    if (ok) {
-      ui.subtitle.textContent = '¡Listo! Inicializando aplicación…';
-      ui.bar.style.background = COLORS.verde;
-      setTimeout(() => {
-        ui.overlay.style.opacity = '0';
-        setTimeout(() => ui.overlay.remove(), 400);
-      }, 600);
-    } else {
-      ui.subtitle.textContent = 'Error en la carga. Revisa la consola.';
-      ui.subtitle.style.color = COLORS.rojo;
-    }
-  }
-
-  // ---------- Carga dinámica de PapaParse ----------
-  function loadPapaParse() {
+  // ════════════════════════════════════════════════════════════════
+  // CARGA DE UN CSV
+  // ════════════════════════════════════════════════════════════════
+  function loadCSV(url, key) {
     return new Promise((resolve, reject) => {
-      if (window.Papa) return resolve();
-      const s = document.createElement('script');
-      s.src = PAPA_CDN;
-      s.async = true;
-      s.onload  = () => resolve();
-      s.onerror = () => reject(new Error('No se pudo cargar PapaParse desde el CDN.'));
-      document.head.appendChild(s);
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error(`Timeout (${FETCH_TIMEOUT_MS} ms) cargando ${key}`));
+        }
+      }, FETCH_TIMEOUT_MS);
+
+      Papa.parse(url, {
+        download: true,
+        header: true,
+        skipEmptyLines: 'greedy',
+        transformHeader: h => (h || '').trim(),
+        transform: v => (typeof v === 'string' ? v.trim() : v),
+        complete: (results) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (results.errors && results.errors.length) {
+            console.warn(`[IA-NAMI] ⚠ ${key}: ${results.errors.length} advertencia(s) de parseo`);
+          }
+          resolve(results.data || []);
+        },
+        error: (err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        }
+      });
     });
   }
 
-  // ---------- Fetch + parseo de un CSV ----------
-  function fileToKey(filename) {
-    // Convierte "Presentados.csv" -> "Presentados"
-    return filename.replace(/\.csv$/i, '');
+  // ════════════════════════════════════════════════════════════════
+  // CARGA PRINCIPAL (todos los CSVs en paralelo)
+  // ════════════════════════════════════════════════════════════════
+  async function loadAllData() {
+    if (typeof Papa === 'undefined') {
+      const msg = 'PapaParse no está cargado. Inclúyelo ANTES de loader.js';
+      console.error('[IA-NAMI] ✗', msg);
+      window.IANAMI_LOAD_ERROR = msg;
+      window.IANAMI_READY = true; // libera la cola para que la UI no se cuelgue
+      flushPendingRefreshCalls();
+      return;
+    }
+
+    console.log('[IA-NAMI] 🚀 Iniciando carga desde GitHub…');
+    const t0 = performance.now();
+
+    const entries = Object.entries(CSV_FILES);
+    const results = await Promise.allSettled(
+      entries.map(([key, file]) =>
+        loadCSV(BASE_URL + file, key).then(data => ({ key, data }))
+      )
+    );
+
+    let total = 0;
+    const failures = [];
+
+    results.forEach((res, i) => {
+      const [key, file] = entries[i];
+      if (res.status === 'fulfilled') {
+        window.DB[key] = res.value.data;
+        total += res.value.data.length;
+        console.log(`[IA-NAMI] ✓ ${key}: ${res.value.data.length} registros`);
+      } else {
+        window.DB[key] = []; // fallback seguro
+        failures.push({ key, file, error: res.reason });
+        console.error(`[IA-NAMI] ✗ ${key} (${file}):`, res.reason?.message || res.reason);
+      }
+    });
+
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+    if (failures.length === entries.length) {
+      const msg = `No se cargó ningún CSV. Revisa la URL base: ${BASE_URL}`;
+      console.error('[IA-NAMI] ✗ FATAL:', msg);
+      window.IANAMI_LOAD_ERROR = msg;
+      window.dispatchEvent(new CustomEvent('ianami-error', {
+        detail: { message: msg, failures }
+      }));
+    } else if (failures.length) {
+      console.warn(`[IA-NAMI] ⚠ Carga parcial: ${failures.length}/${entries.length} archivo(s) fallaron`);
+    }
+
+    console.log(`[IA-NAMI] ✅ Listo: ${total} registros en ${elapsed}s`);
+
+    // ORDEN IMPORTANTE: primero el flag, luego evento, luego flush.
+    window.IANAMI_READY = true;
+
+    window.dispatchEvent(new CustomEvent('ianami-loaded', {
+      detail: { DB: window.DB, recordCount: total, failures }
+    }));
+
+    flushPendingRefreshCalls();
   }
 
-  function fetchAndParseCSV(filename, ui, state) {
-    const url = GITHUB_BASE + encodeURIComponent(filename);
+  // ════════════════════════════════════════════════════════════════
+  // EJECUTAR LLAMADAS ENCOLADAS (o disparar una inicial)
+  // ════════════════════════════════════════════════════════════════
+  function flushPendingRefreshCalls(attempt = 0) {
+    if (typeof realRefreshDashboard !== 'function') {
+      // El HTML aún no terminó de parsear y definir la función.
+      // Reintentamos brevemente.
+      if (attempt < FLUSH_MAX_ATTEMPTS) {
+        setTimeout(() => flushPendingRefreshCalls(attempt + 1), 50);
+      } else {
+        console.warn('[IA-NAMI] refreshDashboard nunca quedó definida tras 1 s de espera');
+      }
+      return;
+    }
 
-    return fetch(url, { cache: 'no-cache' })
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status} – ${filename}`);
-        return res.text();
-      })
-      .then(text => new Promise((resolve, reject) => {
-        window.Papa.parse(text, {
-          header: true,
-          dynamicTyping: true,
-          skipEmptyLines: true,
-          transformHeader: h => (h || '').trim(),
-          complete: (results) => {
-            const key = fileToKey(filename);
-            window.DB[key] = results.data;
-            state.loaded++;
-            updateProgress(ui, state.loaded, CSV_FILES.length, filename, 'ok');
-            resolve({ filename, rows: results.data.length, ok: true });
-          },
-          error: (err) => reject(err)
-        });
-      }))
-      .catch(err => {
-        // No abortamos el resto: registramos el error y seguimos.
-        state.loaded++;
-        window.DB[fileToKey(filename)] = [];
-        updateProgress(ui, state.loaded, CSV_FILES.length, `${filename} (error)`, 'err');
-        console.error(`[IA-NAMI loader] ${filename}:`, err);
-        return { filename, rows: 0, ok: false, error: err.message };
-      });
+    if (pendingRefreshCalls.length === 0) {
+      // Nadie llamó refreshDashboard mientras cargábamos →
+      // disparamos una llamada inicial nosotros mismos para renderizar.
+      console.log('[IA-NAMI] Disparando refreshDashboard inicial');
+      try { realRefreshDashboard(); }
+      catch (err) { console.error('[IA-NAMI] Error en refreshDashboard inicial:', err); }
+      return;
+    }
+
+    console.log(`[IA-NAMI] Ejecutando refreshDashboard tras ${pendingRefreshCalls.length} llamada(s) encolada(s)`);
+    // Solo replicamos la ÚLTIMA llamada con sus args: cada refresh
+    // re-renderiza todo, las anteriores quedan obsoletas. Si tu lógica
+    // necesita procesar todas, cámbialo a `while (pendingRefreshCalls.length) …`
+    const lastArgs = pendingRefreshCalls[pendingRefreshCalls.length - 1];
+    pendingRefreshCalls.length = 0;
+    try { realRefreshDashboard.apply(window, lastArgs); }
+    catch (err) { console.error('[IA-NAMI] Error en refreshDashboard encolada:', err); }
   }
 
-  // ---------- Flujo principal ----------
-  function start() {
-    const ui = createProgressUI();
-    updateProgress(ui, 0, CSV_FILES.length, null, null);
-    ui.subtitle.textContent = 'Cargando librería PapaParse…';
-
-    loadPapaParse()
-      .then(() => {
-        ui.subtitle.textContent = `Descargando ${CSV_FILES.length} archivos en paralelo…`;
-        const state = { loaded: 0 };
-        // ===== Promise.all → carga paralela =====
-        return Promise.all(CSV_FILES.map(f => fetchAndParseCSV(f, ui, state)));
-      })
-      .then(results => {
-        const totalRows = results.reduce((s, r) => s + r.rows, 0);
-        const errors    = results.filter(r => !r.ok);
-
-        console.log(
-          `%c[IA-NAMI loader] Carga completa%c — ${results.length} archivos · ` +
-          `${totalRows.toLocaleString('es-MX')} registros`,
-          `color:${COLORS.verde};font-weight:700;`, 'color:inherit;'
-        );
-        if (errors.length) {
-          console.warn(`[IA-NAMI loader] ${errors.length} archivo(s) con error:`, errors);
-        }
-        console.log('[IA-NAMI loader] window.DB =', window.DB);
-
-        dismissUI(ui, true);
-
-        // ===== Lanzar el inicializador de la app =====
-        setTimeout(() => {
-          if (typeof window.initApp === 'function') {
-            console.log('[IA-NAMI loader] Ejecutando window.initApp()…');
-            window.initApp();
-          } else if (typeof window.renderAll === 'function') {
-            console.log('[IA-NAMI loader] Ejecutando window.renderAll()…');
-            window.renderAll();
-          } else {
-            console.warn(
-              '[IA-NAMI loader] No se encontró window.initApp() ni window.renderAll(). ' +
-              'Los datos están disponibles en window.DB. ' +
-              'Se emitió el evento "ianami:ready".'
-            );
-          }
-          // Evento adicional por si el HTML prefiere escucharlo
-          window.dispatchEvent(new CustomEvent('ianami:ready', { detail: { DB: window.DB } }));
-        }, 650);
-      })
-      .catch(err => {
-        console.error('[IA-NAMI loader] Error fatal:', err);
-        dismissUI(ui, false);
-      });
-  }
-
-  // ---------- Arranque ----------
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
+  // ════════════════════════════════════════════════════════════════
+  // ARRANQUE
+  // ════════════════════════════════════════════════════════════════
+  // Arrancamos lo antes posible: no esperamos a DOMContentLoaded
+  // para que la latencia de red ocurra en paralelo al parseo del HTML.
+  if (typeof Papa !== 'undefined') {
+    loadAllData();
+  } else if (document.readyState === 'loading') {
+    // PapaParse podría estar más abajo en el HTML; esperamos al DOM listo.
+    document.addEventListener('DOMContentLoaded', loadAllData, { once: true });
   } else {
-    start();
+    console.error('[IA-NAMI] PapaParse no encontrado y DOM ya parseado. Revisa el orden de los <script>.');
   }
-window.addEventListener('ianami-loaded', function() {
-  if (typeof renderDashboard === 'function') renderDashboard();
-  if (typeof initCharts === 'function') initCharts();
-  if (typeof updateKPIs === 'function') updateKPIs();
-  if (typeof renderAll === 'function') renderAll();
-});
+
+  // ════════════════════════════════════════════════════════════════
+  // API DE DEBUG (útil desde la consola del navegador)
+  //   IANAMI.status()  → estado actual
+  //   IANAMI.reload()  → recargar todos los CSVs
+  //   IANAMI.DB()      → snapshot de los datos
+  // ════════════════════════════════════════════════════════════════
+  window.IANAMI = {
+    reload: loadAllData,
+    DB: () => window.DB,
+    status: () => ({
+      ready: window.IANAMI_READY,
+      error: window.IANAMI_LOAD_ERROR,
+      pending: pendingRefreshCalls.length,
+      counts: Object.fromEntries(
+        Object.entries(window.DB).map(([k, v]) => [k, Array.isArray(v) ? v.length : '?'])
+      )
+    })
+  };
+
+})();
