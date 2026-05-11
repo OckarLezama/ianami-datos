@@ -29,7 +29,7 @@
   // CONFIGURACIÓN
   // ════════════════════════════════════════════════════════════════
   const GITHUB_USER   = 'OckarLezama';
-  const GITHUB_REPO   = 'Datos';
+  cconst GITHUB_REPO   = 'ianami-datos';
   const GITHUB_BRANCH = 'main';
   const BASE_URL = `https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/`;
 
