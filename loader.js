@@ -1,4 +1,4 @@
-/* ============================================================
+/* ============================================================ 
  *  IA-NAMI · loader.js
  *  Carga automática de 15 CSVs desde GitHub → window.DB
  *  Paleta institucional CDMX 2024–2030
