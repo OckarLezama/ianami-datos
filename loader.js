@@ -1,16 +1,14 @@
 /**
- * loader.js — IA-NAMI v4 (versión definitiva)
+ * loader.js — IA-NAMI v5 (definitivo)
  * ────────────────────────────────────────────────────────────────
- * Repo: github.com/OckarLezama/ianami-datos
- *
- * Cada dataset se carga, se agrega por mes (YYYY-MM) y las columnas
- * del CSV se RENOMBRAN a los nombres cortos que usa el dashboard.
- *
- * Estructura final en window.DB.<key>:
- *   { "YYYY-MM": { total: N, pv: N, rein: N, ... } }
- *
- * Agregados por dimensión (resc_or, resc_nac, enc_ciudad, enc_estado):
- *   { "YYYY-MM": { "CHIAPAS": N, "CAMPECHE": N, ... } }
+ * Cambios v5:
+ *  - Espera a window.load (no solo DOMContentLoaded) antes del
+ *    primer refreshDashboard, así TODAS las secciones del dashboard
+ *    (Dashboard, Análisis Tendencias, Geointeligencia, etc.) ya
+ *    están montadas en el DOM.
+ *  - Dispara refreshDashboard TRES veces escalonadas (0ms, 250ms,
+ *    800ms) para asegurar que todos los KPIs y gráficos se rendericen
+ *    aunque haya inicializadores tardíos.
  * ────────────────────────────────────────────────────────────────
  */
 
@@ -25,20 +23,6 @@
   const GITHUB_BRANCH = 'main';
   const BASE_URL = `https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/`;
 
-  /**
-   * Cada dataset puede definir:
-   *
-   *   columnMap: { 'COLUMNA EN CSV': 'nombre_corto', ... }
-   *              Renombra columnas numéricas. Si incluye 'total',
-   *              esa columna es el total (no se duplica).
-   *
-   *   pivot: { sourceColumn, valueColumn, mapping: { 'VALOR': 'nombre' } }
-   *              Suma valueColumn agrupado por categorías de sourceColumn.
-   *              Útil para Encuentros (USBP, OFO, CBP One).
-   *
-   *   groupBy: [{ key, columnHints }]
-   *              Agrega también por mes + dimensión (estado, nacionalidad...).
-   */
   const DATASETS = [
     {
       file: 'Presentados.csv',
@@ -129,11 +113,7 @@
       key:  'inad_monthly',
       columnMap: { 'INADMITIDOS': 'total' }
     },
-    {
-      file: 'Condicion_de_Estancia.csv',
-      key:  'estancia_monthly'
-      // sin columnMap: detección automática de columnas numéricas
-    },
+    { file: 'Condicion_de_Estancia.csv', key: 'estancia_monthly'    },
     {
       file: 'Internaciones.csv',
       key:  'internaciones_monthly',
@@ -144,14 +124,8 @@
         'INGRESOS TERRESTRES': 'terrestre'
       }
     },
-    {
-      file: 'Motivo_de_Estancia.csv',
-      key:  'motivo_monthly'
-    },
-    {
-      file: 'Caravanas_2019_2026.csv',
-      key:  'caravanas_monthly'
-    },
+    { file: 'Motivo_de_Estancia.csv',             key: 'motivo_monthly'     },
+    { file: 'Caravanas_2019_2026.csv',            key: 'caravanas_monthly'  },
     { file: 'Estados_Frontera.csv',               key: 'frontera_monthly'   },
     { file: 'Cinturones_Contencion.csv',          key: 'cinturones_monthly' },
     { file: 'Centro_Coordinador_Operaciones.csv', key: 'cco_monthly'        }
@@ -160,6 +134,7 @@
   const DATE_COLUMN_HINTS  = ['DIA', 'Dia', 'FECHA', 'Fecha', 'fecha'];
   const FETCH_TIMEOUT_MS   = 60000;
   const FLUSH_MAX_ATTEMPTS = 30;
+  const EXTRA_REFRESH_DELAYS_MS = [250, 800];   // refrescos adicionales tras el inicial
 
   // ════════════════════════════════════════════════════════════════
   // ESTADO GLOBAL
@@ -253,13 +228,10 @@
   }
 
   function findMappedColumns(rows, columnMap) {
-    // Devuelve { rawColName: shortName, ... } resolviendo mayúsculas/acentos
     const headers = rows.length ? Object.keys(rows[0]) : [];
     const result = {};
     Object.entries(columnMap).forEach(([csvName, shortName]) => {
-      // Coincidencia exacta primero
       if (headers.includes(csvName)) { result[csvName] = shortName; return; }
-      // Insensible a case/acentos
       const nc = normalize(csvName);
       for (const h of headers) if (normalize(h) === nc) { result[h] = shortName; return; }
       console.warn(`[IA-NAMI] ⚠ columna "${csvName}" no encontrada en CSV`);
@@ -297,30 +269,26 @@
     const out = {};
     if (!rows.length) return out;
 
-    // 1. Determinar mapeo de columnas
-    let mapping;          // { rawCsvCol: shortName }
-    let hasExplicitTotal; // boolean
+    let mapping;
+    let hasExplicitTotal;
 
     if (ds.columnMap) {
       mapping = findMappedColumns(rows, ds.columnMap);
       hasExplicitTotal = Object.values(mapping).includes('total');
     } else {
-      // Detección automática
       const dimCols = (ds.groupBy || []).map(g => pickColumn(rows, g.columnHints)).filter(Boolean);
       const pivotCol = ds.pivot ? pickColumn(rows, [ds.pivot.sourceColumn]) : null;
       const numericCols = detectNumericColumns(rows, [dateCol, pivotCol, ...dimCols]);
       mapping = {};
-      numericCols.forEach(c => { mapping[c] = c; });   // mantiene el nombre original
+      numericCols.forEach(c => { mapping[c] = c; });
       hasExplicitTotal = false;
     }
 
-    // 2. Resolver pivot
     let pivotCol = null, pivotValueCol = null, pivotMapping = null;
     if (ds.pivot) {
       pivotCol = pickColumn(rows, [ds.pivot.sourceColumn]);
       pivotValueCol = pickColumn(rows, [ds.pivot.valueColumn]);
       if (pivotCol && pivotValueCol) {
-        // Normalizar mapping de valores
         pivotMapping = {};
         Object.entries(ds.pivot.mapping).forEach(([val, short]) => {
           pivotMapping[normalize(val)] = short;
@@ -328,7 +296,6 @@
       }
     }
 
-    // 3. Iterar filas
     rows.forEach(row => {
       const ym = toYearMonth(row[dateCol]);
       if (!ym) return;
@@ -339,17 +306,14 @@
         if (pivotMapping) Object.values(pivotMapping).forEach(s => { out[ym][s] = 0; });
       }
 
-      // Sumar columnas mapeadas
       Object.entries(mapping).forEach(([rawCol, shortName]) => {
         const val = toNumber(row[rawCol]);
         out[ym][shortName] = (out[ym][shortName] || 0) + val;
-        // Si NO hay total explícito, acumular en total (salvo que el shortName ya sea 'total')
         if (!hasExplicitTotal && shortName !== 'total') {
           out[ym].total += val;
         }
       });
 
-      // Pivot: filas que coinciden con categorías
       if (pivotMapping) {
         const cat = normalize(row[pivotCol]);
         const shortName = pivotMapping[cat];
@@ -375,14 +339,11 @@
       if (!out[ym]) out[ym] = {};
       if (!out[ym][key]) out[ym][key] = 0;
 
-      // Si hay un 'total' explícito, suma solo ese. Si no, suma todas las columnas mapeadas.
       if (hasExplicitTotal) {
         const totalCol = Object.entries(mapping).find(([_, s]) => s === 'total');
         if (totalCol) out[ym][key] += toNumber(row[totalCol[0]]);
       } else {
-        Object.keys(mapping).forEach(rawCol => {
-          out[ym][key] += toNumber(row[rawCol]);
-        });
+        Object.keys(mapping).forEach(rawCol => { out[ym][key] += toNumber(row[rawCol]); });
       }
     });
     return out;
@@ -426,7 +387,7 @@
       console.error('[IA-NAMI] ✗', msg);
       window.IANAMI_LOAD_ERROR = msg;
       window.IANAMI_READY = true;
-      flushPendingRefreshCalls();
+      scheduleRefreshes();
       return;
     }
 
@@ -452,24 +413,16 @@
       }
 
       const rows = res.value.rows;
-      if (!rows.length) {
-        console.warn(`[IA-NAMI] ⚠ ${d.key}: archivo vacío`);
-        return;
-      }
+      if (!rows.length) { console.warn(`[IA-NAMI] ⚠ ${d.key}: archivo vacío`); return; }
 
       const dateCol = pickColumn(rows, DATE_COLUMN_HINTS);
-      if (!dateCol) {
-        console.warn(`[IA-NAMI] ⚠ ${d.key}: sin columna de fecha`);
-        return;
-      }
+      if (!dateCol) { console.warn(`[IA-NAMI] ⚠ ${d.key}: sin columna de fecha`); return; }
 
-      // Agregado principal
       window.DB[d.key] = aggregateDataset(rows, d, dateCol);
       const months = Object.keys(window.DB[d.key]).length;
       const sample = months > 0 ? Object.keys(Object.values(window.DB[d.key])[0]).join(',') : '∅';
-      console.log(`[IA-NAMI] ✓ ${d.key}: ${rows.length} filas → ${months} meses [campos: ${sample}]`);
+      console.log(`[IA-NAMI] ✓ ${d.key}: ${rows.length} filas → ${months} meses [${sample}]`);
 
-      // Agregados por dimensión
       if (d.groupBy) {
         const mapping = d.columnMap ? findMappedColumns(rows, d.columnMap)
                                     : Object.fromEntries(detectNumericColumns(rows, [dateCol]).map(c => [c, c]));
@@ -477,13 +430,11 @@
         d.groupBy.forEach(g => {
           const dimCol = pickColumn(rows, g.columnHints);
           if (!dimCol) {
-            console.warn(`[IA-NAMI] ⚠ ${g.key}: columna no encontrada (${g.columnHints.join(', ')})`);
-            window.DB[g.key] = {};
-            return;
+            console.warn(`[IA-NAMI] ⚠ ${g.key}: columna no encontrada`);
+            window.DB[g.key] = {}; return;
           }
           window.DB[g.key] = aggregateByDimension(rows, dateCol, dimCol, mapping, hasTotal);
-          const mm = Object.keys(window.DB[g.key]).length;
-          console.log(`[IA-NAMI]   ↳ ${g.key} (por "${dimCol}"): ${mm} meses`);
+          console.log(`[IA-NAMI]   ↳ ${g.key} (por "${dimCol}"): ${Object.keys(window.DB[g.key]).length} meses`);
         });
       }
 
@@ -499,16 +450,47 @@
       console.warn(`[IA-NAMI] ⚠ Carga parcial: ${failures.length} archivo(s) fallaron`);
     }
 
-    console.log(`[IA-NAMI] ✅ Listo: ${okCount}/${DATASETS.length} datasets en ${elapsed}s`);
+    console.log(`[IA-NAMI] ✅ Datos listos: ${okCount}/${DATASETS.length} datasets en ${elapsed}s`);
 
     window.IANAMI_READY = true;
     window.dispatchEvent(new CustomEvent('ianami-loaded', { detail: { DB: window.DB, datasets: okCount, failures } }));
-    flushPendingRefreshCalls();
+
+    // ── FIX TIMING: esperar a window.load antes del primer refresh ──
+    scheduleRefreshes();
   }
 
   // ════════════════════════════════════════════════════════════════
-  // EJECUTAR LLAMADAS ENCOLADAS
+  // SCHEDULER DE REFRESH (FIX DE TIMING)
+  // ────────────────────────────────────────────────────────────────
+  // El dashboard tiene 7 secciones que se montan progresivamente.
+  // 1° refresh: tras window.load (todo el DOM y scripts cargados).
+  // 2° y 3° refresh: 250ms y 800ms después, por si hay inicializa-
+  //   dores tardíos (gráficos Chart.js, mapas, etc.).
   // ════════════════════════════════════════════════════════════════
+  function scheduleRefreshes() {
+    if (document.readyState === 'complete') {
+      doRefreshCycle();
+    } else {
+      window.addEventListener('load', doRefreshCycle, { once: true });
+    }
+  }
+
+  function doRefreshCycle() {
+    // Refresh inicial (procesa cola si hay)
+    flushPendingRefreshCalls();
+
+    // Refrescos adicionales escalonados para asegurar render completo
+    EXTRA_REFRESH_DELAYS_MS.forEach(delay => {
+      setTimeout(() => {
+        if (typeof realRefreshDashboard === 'function') {
+          console.log(`[IA-NAMI] ♻ Refresh adicional (+${delay}ms)`);
+          try { realRefreshDashboard(); }
+          catch (err) { console.error('[IA-NAMI] Error en refresh adicional:', err); }
+        }
+      }, delay);
+    });
+  }
+
   function flushPendingRefreshCalls(attempt = 0) {
     if (typeof realRefreshDashboard !== 'function') {
       if (attempt < FLUSH_MAX_ATTEMPTS) { setTimeout(() => flushPendingRefreshCalls(attempt + 1), 50); }
@@ -516,16 +498,16 @@
       return;
     }
     if (pendingRefreshCalls.length === 0) {
-      console.log('[IA-NAMI] Disparando refreshDashboard inicial');
+      console.log('[IA-NAMI] ▶ Disparando refreshDashboard inicial');
       try { realRefreshDashboard(); }
-      catch (err) { console.error('[IA-NAMI] Error en refreshDashboard inicial:', err); }
+      catch (err) { console.error('[IA-NAMI] Error en refresh inicial:', err); }
       return;
     }
-    console.log(`[IA-NAMI] Ejecutando refreshDashboard tras ${pendingRefreshCalls.length} llamada(s) encolada(s)`);
+    console.log(`[IA-NAMI] ▶ refreshDashboard tras ${pendingRefreshCalls.length} llamada(s) encolada(s)`);
     const lastArgs = pendingRefreshCalls[pendingRefreshCalls.length - 1];
     pendingRefreshCalls.length = 0;
     try { realRefreshDashboard.apply(window, lastArgs); }
-    catch (err) { console.error('[IA-NAMI] Error en refreshDashboard encolada:', err); }
+    catch (err) { console.error('[IA-NAMI] Error en refresh encolado:', err); }
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -540,6 +522,10 @@
   // ════════════════════════════════════════════════════════════════
   window.IANAMI = {
     reload: loadAllData,
+    refresh: () => {
+      if (typeof realRefreshDashboard === 'function') { realRefreshDashboard(); return 'OK'; }
+      return 'refreshDashboard no disponible';
+    },
     DB: () => window.DB,
     status: () => ({
       ready: window.IANAMI_READY,
