@@ -1,24 +1,17 @@
 /**
- * loader.js — IA-NAMI (datos migratorios)
+ * loader.js — IA-NAMI (datos migratorios)  v3
  * ────────────────────────────────────────────────────────────────
- * Qué hace:
- *   1. Baja cada CSV desde GitHub (PapaParse).
- *   2. Convierte la columna DIA (DD/MM/YYYY) a YYYY-MM.
- *   3. Suma todas las columnas numéricas agrupando por mes.
- *   4. Guarda el resultado en window.DB.<clave>_monthly como objeto
- *      { "YYYY-MM": { col1: suma, col2: suma, ..., total: suma_total } }.
- *   5. BLOQUEA refreshDashboard() hasta terminar (encolando llamadas
- *      tempranas y haciendo replay).
- *   6. Dispara el evento 'ianami-loaded' al completar.
+ * Repo: github.com/OckarLezama/ianami-datos
  *
- * HTML requiere:
- *   - window.DB = {}     en lugar de  let DB = {}
- *   - <script> de papaparse ANTES de este loader
- *   - <script src="loader.js"></script>   ANTES del <script> principal
+ * Estructura que produce en window.DB:
  *
- * Si una clave no coincide con lo que tu dashboard espera (p.ej.
- * tu código usa DB.internaciones_monthly pero aquí dice intern_monthly),
- * ajusta el campo `key` en la tabla DATASETS de abajo.
+ *   DB.<nombre>_monthly = {
+ *     "YYYY-MM": { col1: suma, col2: suma, ..., total: suma_total }
+ *   }
+ *
+ *   DB.<nombre>_<dim>_monthly = {            // datasets agrupados
+ *     "YYYY-MM": { "CHIAPAS": 234, "CAMPECHE": 12, ... }
+ *   }
  * ────────────────────────────────────────────────────────────────
  */
 
@@ -29,45 +22,67 @@
   // CONFIGURACIÓN
   // ════════════════════════════════════════════════════════════════
   const GITHUB_USER   = 'OckarLezama';
-  cconst GITHUB_REPO   = 'ianami-datos';
+  const GITHUB_REPO   = 'ianami-datos';     // ← URL CORRECTA
   const GITHUB_BRANCH = 'main';
   const BASE_URL = `https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/`;
 
-  // Mapeo: archivo → clave en window.DB
-  // Si tu código del dashboard usa otro nombre, cambia solo la columna `key`.
-  // Los archivos deben coincidir EXACTAMENTE (mayúsculas/minúsculas) con el repo.
+  /**
+   * Cada dataset:
+   *   file     → nombre del CSV en GitHub
+   *   key      → clave en window.DB (agregado total por mes)
+   *   groupBy  → (opcional) datasets adicionales agrupados por mes + columna
+   *              columnHints son nombres alternativos de la columna por si
+   *              varían entre CSVs (mayúsculas, acentos, etc.)
+   */
   const DATASETS = [
-    { file: 'Presentados.csv',                    key: 'presentados_monthly'  },
-    { file: 'Rescatados.csv',                     key: 'rescatados_monthly'   },
-    { file: 'Canalizados.csv',                    key: 'canalizados_monthly'  },
-    { file: 'Retornados.csv',                     key: 'retornados_monthly'   },
-    { file: 'Extranjeros_recibidos.csv',          key: 'extranjeros_monthly'  },
-    { file: 'Mexicanos_Recibidos.csv',            key: 'mexicanos_monthly'    },
-    { file: 'Encuentros.csv',                     key: 'encuentros_monthly'   },
-    { file: 'Inadmisiones.csv',                   key: 'inadmisiones_monthly' },
-    { file: 'Condicion_de_Estancia.csv',          key: 'condicion_monthly'    },
-    { file: 'Internaciones.csv',                  key: 'intern_monthly'       },
-    { file: 'Motivo_de_Estancia.csv',             key: 'motivo_monthly'       },
-    { file: 'Caravanas_2019_2026.csv',            key: 'caravanas_monthly'    },
-    { file: 'Estados_Frontera.csv',               key: 'frontera_monthly'     },
-    { file: 'Cinturones_Contencion.csv',          key: 'cinturones_monthly'   },
-    { file: 'Centro_Coordinador_Operaciones.csv', key: 'cco_monthly'          }
+    { file: 'Presentados.csv',                    key: 'presentados_monthly' },
+    {
+      file: 'Rescatados.csv',                     key: 'rescatados_monthly',
+      groupBy: [
+        { key: 'resc_or_monthly',  columnHints: ['Estado / O.R.', 'Estado', 'OR', 'Estado/OR'] },
+        { key: 'resc_nac_monthly', columnHints: ['NACIONALIDAD', 'Nacionalidad', 'Nacionalidad/Origen'] }
+      ]
+    },
+    { file: 'Canalizados.csv',                    key: 'can_monthly' },
+    { file: 'Retornados.csv',                     key: 'retornados_monthly' },
+    { file: 'Extranjeros_recibidos.csv',          key: 'ext_monthly' },
+    { file: 'Mexicanos_Recibidos.csv',            key: 'mx_monthly' },
+    {
+      file: 'Encuentros.csv',                     key: 'encuentros_monthly',
+      groupBy: [
+        { key: 'enc_ciudad_monthly', columnHints: ['CIUDAD', 'Ciudad', 'Ciudad / Localidad', 'Localidad'] },
+        { key: 'enc_estado_monthly', columnHints: ['Estado / O.R.', 'Estado', 'ESTADO', 'OR'] }
+      ]
+    },
+    { file: 'Inadmisiones.csv',                   key: 'inad_monthly' },
+    { file: 'Condicion_de_Estancia.csv',          key: 'estancia_monthly' },
+    { file: 'Internaciones.csv',                  key: 'internaciones_monthly' },
+    { file: 'Motivo_de_Estancia.csv',             key: 'motivo_monthly' },
+    { file: 'Caravanas_2019_2026.csv',            key: 'caravanas_monthly' },
+    { file: 'Estados_Frontera.csv',               key: 'frontera_monthly' },
+    { file: 'Cinturones_Contencion.csv',          key: 'cinturones_monthly' },
+    { file: 'Centro_Coordinador_Operaciones.csv', key: 'cco_monthly' }
   ];
 
-  const DATE_COLUMN        = 'DIA';   // columna con la fecha en todos los CSVs
-  const FETCH_TIMEOUT_MS   = 45000;   // 45 s por archivo
-  const FLUSH_MAX_ATTEMPTS = 20;      // espera hasta 1 s a que el HTML defina refreshDashboard
+  const DATE_COLUMN_HINTS  = ['DIA', 'Dia', 'FECHA', 'Fecha', 'fecha'];
+  const FETCH_TIMEOUT_MS   = 60000;
+  const FLUSH_MAX_ATTEMPTS = 30;
 
   // ════════════════════════════════════════════════════════════════
   // ESTADO GLOBAL
   // ════════════════════════════════════════════════════════════════
   window.DB = window.DB || {};
 
-  // Pre-pobla con {} para que Object.entries(DB.xxx_monthly) NO truene
-  // si refreshDashboard se ejecutara antes de tiempo.
+  // Pre-pobla TODAS las claves (principales y agrupadas) con {} para
+  // que Object.entries(...) no truene si refreshDashboard corre antes.
+  const ALL_KEYS = [];
   DATASETS.forEach(d => {
-    if (typeof window.DB[d.key] !== 'object' || window.DB[d.key] === null || Array.isArray(window.DB[d.key])) {
-      window.DB[d.key] = {};
+    ALL_KEYS.push(d.key);
+    (d.groupBy || []).forEach(g => ALL_KEYS.push(g.key));
+  });
+  ALL_KEYS.forEach(k => {
+    if (typeof window.DB[k] !== 'object' || window.DB[k] === null || Array.isArray(window.DB[k])) {
+      window.DB[k] = {};
     }
   });
 
@@ -94,59 +109,64 @@
           console.warn('[IA-NAMI] refreshDashboard llamada pero aún no definida');
           return;
         }
-        try {
-          return realRefreshDashboard.apply(this, args);
-        } catch (err) {
-          console.error('[IA-NAMI] Error en refreshDashboard:', err);
-          throw err;
-        }
+        try { return realRefreshDashboard.apply(this, args); }
+        catch (err) { console.error('[IA-NAMI] Error en refreshDashboard:', err); throw err; }
       };
     },
-    set(fn) {
-      realRefreshDashboard = fn;
-    }
+    set(fn) { realRefreshDashboard = fn; }
   });
 
   // ════════════════════════════════════════════════════════════════
   // UTILIDADES
   // ════════════════════════════════════════════════════════════════
-
-  /**
-   * Convierte "01/10/2024" (DD/MM/YYYY) → "2024-10".
-   * También acepta "2024-10-01" (ISO) y "10/01/2024" si detecta día > 12.
-   */
   function toYearMonth(dateStr) {
     if (!dateStr) return null;
     const s = String(dateStr).trim();
     if (!s) return null;
 
-    // ISO: 2024-10-01
     let m = s.match(/^(\d{4})-(\d{1,2})-\d{1,2}/);
     if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
 
-    // DD/MM/YYYY o MM/DD/YYYY
     m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
     if (m) {
       const a = parseInt(m[1], 10), b = parseInt(m[2], 10), y = m[3];
-      // Si a > 12 forzosamente DD/MM. Si b > 12 forzosamente MM/DD.
-      // Si ambos <= 12 asumimos DD/MM (formato mexicano).
       const month = (a > 12) ? b : (b > 12 ? a : b);
       return `${y}-${String(month).padStart(2, '0')}`;
     }
 
-    // YYYY/MM/DD
     m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-]\d{1,2}/);
     if (m) return `${m[1]}-${m[2].padStart(2, '0')}`;
 
     return null;
   }
 
-  /**
-   * Detecta columnas numéricas mirando hasta 50 filas.
-   */
-  function detectNumericColumns(rows, excludeCol) {
+  function pickColumn(rows, hints) {
+    if (!rows.length) return null;
+    const headers = Object.keys(rows[0]);
+    // 1. Coincidencia exacta
+    for (const h of hints) if (headers.includes(h)) return h;
+    // 2. Coincidencia insensible a case/acentos/espacios
+    const normalize = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+    for (const h of hints) {
+      const nh = normalize(h);
+      for (const header of headers) {
+        if (normalize(header) === nh) return header;
+      }
+    }
+    // 3. Coincidencia parcial
+    for (const h of hints) {
+      const nh = normalize(h);
+      for (const header of headers) {
+        if (normalize(header).includes(nh) || nh.includes(normalize(header))) return header;
+      }
+    }
+    return null;
+  }
+
+  function detectNumericColumns(rows, excludeCols) {
     if (!rows.length) return [];
-    const candidates = Object.keys(rows[0]).filter(c => c !== excludeCol);
+    const exclude = new Set(excludeCols.filter(Boolean));
+    const candidates = Object.keys(rows[0]).filter(c => !exclude.has(c));
     const numeric = [];
     candidates.forEach(col => {
       for (let i = 0; i < Math.min(rows.length, 50); i++) {
@@ -160,39 +180,56 @@
     return numeric;
   }
 
+  function rowNumericTotal(row, numericCols) {
+    let total = 0;
+    numericCols.forEach(c => {
+      const raw = row[c];
+      if (raw === '' || raw === null || raw === undefined) return;
+      const n = Number(String(raw).replace(/,/g, ''));
+      if (!isNaN(n)) total += n;
+    });
+    return total;
+  }
+
   /**
-   * Agrupa filas por mes y suma columnas numéricas.
-   * Devuelve { "YYYY-MM": { col1: suma, col2: suma, ..., total: suma_total } }
+   * Agregado principal: por mes, suma de cada columna numérica + total.
    */
-  function aggregateByMonth(rows, dateCol) {
-    const result = {};
-    if (!rows.length) return result;
-
-    const numericCols = detectNumericColumns(rows, dateCol);
-    if (!numericCols.length) {
-      console.warn(`[IA-NAMI] ⚠ Sin columnas numéricas detectadas (col fecha: ${dateCol})`);
-      return result;
-    }
-
+  function aggregateMonthly(rows, dateCol, numericCols) {
+    const out = {};
     rows.forEach(row => {
       const ym = toYearMonth(row[dateCol]);
       if (!ym) return;
-      if (!result[ym]) {
-        result[ym] = { total: 0 };
-        numericCols.forEach(c => { result[ym][c] = 0; });
+      if (!out[ym]) {
+        out[ym] = { total: 0 };
+        numericCols.forEach(c => { out[ym][c] = 0; });
       }
       numericCols.forEach(c => {
         const raw = row[c];
         if (raw === '' || raw === null || raw === undefined) return;
         const n = Number(String(raw).replace(/,/g, ''));
-        if (!isNaN(n)) {
-          result[ym][c] += n;
-          result[ym].total += n;
-        }
+        if (!isNaN(n)) { out[ym][c] += n; out[ym].total += n; }
       });
     });
+    return out;
+  }
 
-    return result;
+  /**
+   * Agregado por dimensión: { "YYYY-MM": { "VALOR_DIM": total_numerico, ... } }
+   */
+  function aggregateByDimension(rows, dateCol, dimCol, numericCols) {
+    const out = {};
+    rows.forEach(row => {
+      const ym = toYearMonth(row[dateCol]);
+      if (!ym) return;
+      const dim = row[dimCol];
+      if (dim === '' || dim === null || dim === undefined) return;
+      const key = String(dim).trim();
+      if (!key) return;
+      if (!out[ym]) out[ym] = {};
+      if (!out[ym][key]) out[ym][key] = 0;
+      out[ym][key] += rowNumericTotal(row, numericCols);
+    });
+    return out;
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -202,10 +239,7 @@
     return new Promise((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          reject(new Error(`Timeout (${FETCH_TIMEOUT_MS}ms) cargando ${key}`));
-        }
+        if (!settled) { settled = true; reject(new Error(`Timeout (${FETCH_TIMEOUT_MS}ms) cargando ${key}`)); }
       }, FETCH_TIMEOUT_MS);
 
       Papa.parse(url, {
@@ -216,8 +250,7 @@
         transform: v => (typeof v === 'string' ? v.trim() : v),
         complete: (results) => {
           if (settled) return;
-          settled = true;
-          clearTimeout(timer);
+          settled = true; clearTimeout(timer);
           if (results.errors && results.errors.length) {
             console.warn(`[IA-NAMI] ⚠ ${key}: ${results.errors.length} advertencia(s) de parseo`);
           }
@@ -225,9 +258,7 @@
         },
         error: (err) => {
           if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          reject(err);
+          settled = true; clearTimeout(timer); reject(err);
         }
       });
     });
@@ -246,33 +277,64 @@
       return;
     }
 
-    console.log('[IA-NAMI] 🚀 Cargando', DATASETS.length, 'CSV(s) desde GitHub…');
+    console.log(`[IA-NAMI] 🚀 Cargando ${DATASETS.length} CSV(s) desde ${BASE_URL}`);
     const t0 = performance.now();
 
     const results = await Promise.allSettled(
-      DATASETS.map(d =>
-        loadCSV(BASE_URL + d.file, d.key).then(rows => ({ d, rows }))
-      )
+      DATASETS.map(d => loadCSV(BASE_URL + d.file, d.key).then(rows => ({ d, rows })))
     );
 
-    let okCount = 0, totalMonths = 0;
+    let okCount = 0;
     const failures = [];
 
     results.forEach((res, i) => {
       const d = DATASETS[i];
-      if (res.status === 'fulfilled') {
-        const rows = res.value.rows;
-        const agg = aggregateByMonth(rows, DATE_COLUMN);
-        window.DB[d.key] = agg;
-        const months = Object.keys(agg).length;
-        totalMonths += months;
-        okCount++;
-        console.log(`[IA-NAMI] ✓ ${d.key}: ${rows.length} filas → ${months} mes(es)`);
-      } else {
+      if (res.status !== 'fulfilled') {
         window.DB[d.key] = {};
+        (d.groupBy || []).forEach(g => { window.DB[g.key] = {}; });
         failures.push({ file: d.file, key: d.key, error: res.reason });
         console.error(`[IA-NAMI] ✗ ${d.key} (${d.file}):`, res.reason?.message || res.reason);
+        return;
       }
+
+      const rows = res.value.rows;
+      if (!rows.length) {
+        console.warn(`[IA-NAMI] ⚠ ${d.key}: archivo vacío`);
+        return;
+      }
+
+      const dateCol = pickColumn(rows, DATE_COLUMN_HINTS);
+      if (!dateCol) {
+        console.warn(`[IA-NAMI] ⚠ ${d.key}: no se encontró columna de fecha (${DATE_COLUMN_HINTS.join(', ')})`);
+        return;
+      }
+
+      // Columnas dimensionales a excluir del numérico
+      const dimCols = (d.groupBy || [])
+        .map(g => pickColumn(rows, g.columnHints))
+        .filter(Boolean);
+
+      const numericCols = detectNumericColumns(rows, [dateCol, ...dimCols]);
+
+      // Agregado principal
+      window.DB[d.key] = aggregateMonthly(rows, dateCol, numericCols);
+      const months = Object.keys(window.DB[d.key]).length;
+      console.log(`[IA-NAMI] ✓ ${d.key}: ${rows.length} filas → ${months} mes(es)  [cols: ${numericCols.join(',') || '∅'}]`);
+
+      // Agregados por dimensión
+      (d.groupBy || []).forEach(g => {
+        const dimCol = pickColumn(rows, g.columnHints);
+        if (!dimCol) {
+          console.warn(`[IA-NAMI] ⚠ ${g.key}: no se encontró columna (${g.columnHints.join(', ')}) en ${d.file}`);
+          window.DB[g.key] = {};
+          return;
+        }
+        window.DB[g.key] = aggregateByDimension(rows, dateCol, dimCol, numericCols);
+        const mm = Object.keys(window.DB[g.key]).length;
+        console.log(`[IA-NAMI]   ↳ ${g.key} (por "${dimCol}"): ${mm} mes(es)`);
+      });
+
+      okCount++;
     });
 
     const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
@@ -286,14 +348,10 @@
       console.warn(`[IA-NAMI] ⚠ Carga parcial: ${failures.length}/${DATASETS.length} archivo(s) fallaron`);
     }
 
-    console.log(`[IA-NAMI] ✅ Listo: ${okCount}/${DATASETS.length} datasets, ${totalMonths} mes(es) en ${elapsed}s`);
+    console.log(`[IA-NAMI] ✅ Listo: ${okCount}/${DATASETS.length} datasets en ${elapsed}s`);
 
     window.IANAMI_READY = true;
-
-    window.dispatchEvent(new CustomEvent('ianami-loaded', {
-      detail: { DB: window.DB, datasets: okCount, failures }
-    }));
-
+    window.dispatchEvent(new CustomEvent('ianami-loaded', { detail: { DB: window.DB, datasets: okCount, failures } }));
     flushPendingRefreshCalls();
   }
 
@@ -302,21 +360,16 @@
   // ════════════════════════════════════════════════════════════════
   function flushPendingRefreshCalls(attempt = 0) {
     if (typeof realRefreshDashboard !== 'function') {
-      if (attempt < FLUSH_MAX_ATTEMPTS) {
-        setTimeout(() => flushPendingRefreshCalls(attempt + 1), 50);
-      } else {
-        console.warn('[IA-NAMI] refreshDashboard nunca quedó definida tras 1 s');
-      }
+      if (attempt < FLUSH_MAX_ATTEMPTS) { setTimeout(() => flushPendingRefreshCalls(attempt + 1), 50); }
+      else console.warn('[IA-NAMI] refreshDashboard nunca quedó definida');
       return;
     }
-
     if (pendingRefreshCalls.length === 0) {
       console.log('[IA-NAMI] Disparando refreshDashboard inicial');
       try { realRefreshDashboard(); }
       catch (err) { console.error('[IA-NAMI] Error en refreshDashboard inicial:', err); }
       return;
     }
-
     console.log(`[IA-NAMI] Ejecutando refreshDashboard tras ${pendingRefreshCalls.length} llamada(s) encolada(s)`);
     const lastArgs = pendingRefreshCalls[pendingRefreshCalls.length - 1];
     pendingRefreshCalls.length = 0;
@@ -332,25 +385,20 @@
   } else if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', loadAllData, { once: true });
   } else {
-    console.error('[IA-NAMI] PapaParse no encontrado y DOM ya listo. Verifica orden de <script>.');
+    console.error('[IA-NAMI] PapaParse no encontrado y DOM ya listo');
   }
 
   // ════════════════════════════════════════════════════════════════
   // API DE DEBUG (consola del navegador)
-  //   IANAMI.status()                       → estado actual
-  //   IANAMI.reload()                       → recargar todos los CSVs
-  //   IANAMI.peek('rescatados_monthly')     → primeros 3 meses de un dataset
   // ════════════════════════════════════════════════════════════════
   window.IANAMI = {
     reload: loadAllData,
     DB: () => window.DB,
     status: () => ({
-      ready: window.IANAMI_READY,
-      error: window.IANAMI_LOAD_ERROR,
-      pending: pendingRefreshCalls.length,
-      datasets: Object.fromEntries(
-        DATASETS.map(d => [d.key, Object.keys(window.DB[d.key] || {}).length + ' meses'])
-      )
+      ready:    window.IANAMI_READY,
+      error:    window.IANAMI_LOAD_ERROR,
+      pending:  pendingRefreshCalls.length,
+      datasets: Object.fromEntries(ALL_KEYS.map(k => [k, Object.keys(window.DB[k] || {}).length + ' meses']))
     }),
     peek: (key) => {
       const obj = window.DB[key];
