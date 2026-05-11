@@ -1230,7 +1230,6 @@ Chart.defaults.color = '#808080';
 Chart.defaults.plugins.legend.display = false;
 
 let DB = {};
-
 function fmt(n) { if(n===null||n===undefined||n==='')return'—'; return Math.round(n).toLocaleString('es-MX'); }
 function fmtK(n) { if(!n&&n!==0)return'—'; if(n>=1e6)return(n/1e6).toFixed(1)+'M'; if(n>=1e3)return(n/1e3).toFixed(1)+'K'; return fmt(n); }
 function pct(a,b){ if(!b)return'—'; return ((a/b)*100).toFixed(1)+'%'; }
