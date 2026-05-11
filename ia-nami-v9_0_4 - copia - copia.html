@@ -1218,7 +1218,9 @@ table{border-collapse:collapse}
 
 </main>
 
-<script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="loader.js"></script>
+<script> 
 
 const C = {
   rojo:'#B66666', arena:'#BDB58D', verde:'#778E88', gris:'#808080', crema:'#E5E2D3',
@@ -1229,7 +1231,7 @@ Chart.defaults.font.family = "'DM Sans', sans-serif";
 Chart.defaults.color = '#808080';
 Chart.defaults.plugins.legend.display = false;
 
-let DB = {};
+window.DB = {}
 function fmt(n) { if(n===null||n===undefined||n==='')return'—'; return Math.round(n).toLocaleString('es-MX'); }
 function fmtK(n) { if(!n&&n!==0)return'—'; if(n>=1e6)return(n/1e6).toFixed(1)+'M'; if(n>=1e3)return(n/1e3).toFixed(1)+'K'; return fmt(n); }
 function pct(a,b){ if(!b)return'—'; return ((a/b)*100).toFixed(1)+'%'; }
