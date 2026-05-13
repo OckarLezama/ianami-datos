@@ -1,3 +1,542 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IA-NAMI · Inteligencia Migratoria</title>
+    <!-- Librerías -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-3.0.1.min.js" charset="utf-8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #e9edf2 100%);
+            color: #1a2634;
+            line-height: 1.5;
+        }
+
+        /* Header principal */
+        .main-header {
+            background: linear-gradient(90deg, #0b2b3b 0%, #1a4a5f 100%);
+            color: white;
+            padding: 1.5rem 2rem;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            border-bottom: 3px solid #00a8a8;
+        }
+
+        .header-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .title-section h1 {
+            font-size: 2.2rem;
+            letter-spacing: -0.5px;
+            font-weight: 600;
+        }
+
+        .title-section h1 span {
+            color: #5bc8c8;
+            font-weight: 700;
+        }
+
+        .subtitle {
+            font-size: 0.85rem;
+            opacity: 0.85;
+            margin-top: 5px;
+        }
+
+        .date-range {
+            background: rgba(0,0,0,0.3);
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        /* Dashboard container */
+        .dashboard {
+            max-width: 1400px;
+            margin: 2rem auto;
+            padding: 0 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* KPI grid */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .kpi-card {
+            background: white;
+            border-radius: 20px;
+            padding: 1.2rem;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.05);
+            transition: transform 0.2s, box-shadow 0.2s;
+            border-left: 5px solid;
+        }
+
+        .kpi-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 24px rgba(0,0,0,0.1);
+        }
+
+        .kpi-title {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+            color: #5a6874;
+            margin-bottom: 0.5rem;
+        }
+
+        .kpi-value {
+            font-size: 2.2rem;
+            font-weight: 800;
+            color: #1a2c3c;
+            margin-bottom: 0.3rem;
+        }
+
+        .kpi-trend {
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .trend-up { color: #d9534f; }
+        .trend-down { color: #5cb85c; }
+
+        /* Chart cards */
+        .chart-card {
+            background: white;
+            border-radius: 24px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.05);
+            overflow: hidden;
+            transition: all 0.2s;
+        }
+
+        .chart-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid #eef2f6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .chart-header h3 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #1e3a4d;
+        }
+
+        .chart-note {
+            font-size: 0.7rem;
+            color: #8c9aa8;
+            background: #f4f7fc;
+            padding: 4px 10px;
+            border-radius: 20px;
+        }
+
+        .chart-container {
+            padding: 1rem 1rem 0.5rem 1rem;
+            height: 450px;
+        }
+
+        .two-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+        }
+
+        @media (max-width: 1000px) {
+            .two-columns {
+                grid-template-columns: 1fr;
+                gap: 1.5rem;
+            }
+            .header-container {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+        }
+
+        footer {
+            text-align: center;
+            padding: 2rem;
+            font-size: 0.75rem;
+            color: #6c7a89;
+            border-top: 1px solid #dee2e8;
+            margin-top: 1rem;
+        }
+
+        .badge {
+            background: #eef2fa;
+            border-radius: 50px;
+            padding: 6px 14px;
+            font-size: 0.7rem;
+            font-weight: 500;
+        }
+
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            color: white;
+            font-size: 1.2rem;
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body>
+
+<div id="loading" class="loading-overlay">
+    <div>Cargando datos desde GitHub API ...</div>
+</div>
+
+<div class="main-header">
+    <div class="header-container">
+        <div class="title-section">
+            <h1>IA-NAMI <span>Inteligencia Migratoria</span></h1>
+            <div class="subtitle">Ecosistema de análisis · Flujos migratorios en México · oct 2024 — may 2026</div>
+        </div>
+        <div class="date-range">
+            📅 Datos actualizados: Abril 2026 | Proyecciones hasta mayo 2026
+        </div>
+    </div>
+</div>
+
+<div class="dashboard">
+    <div class="kpi-grid" id="kpi-container">
+        <!-- KPIs se llenarán con JS -->
+    </div>
+
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>📈 Presentados ante autoridad migratoria (serie mensual)</h3>
+            <div class="chart-note">Fuente: UAMI / IA-NAMI</div>
+        </div>
+        <div class="chart-container" id="chart-presentados"></div>
+    </div>
+
+    <div class="two-columns">
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>🧒 NNA canalizados al DIF (por país)</h3>
+                <div class="chart-note">Menores no acompañados</div>
+            </div>
+            <div class="chart-container" id="chart-canalizados"></div>
+        </div>
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>🔄 Retornados a país de origen</h3>
+                <div class="chart-note">Asistidos + Deportaciones</div>
+            </div>
+            <div class="chart-container" id="chart-retornados"></div>
+        </div>
+    </div>
+
+    <div class="two-columns">
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>🇺🇸 Extranjeros recibidos desde EE.UU.</h3>
+                <div class="chart-note">Efecto políticas migratorias</div>
+            </div>
+            <div class="chart-container" id="chart-recibidos"></div>
+        </div>
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>🇲🇽 Mexicanos repatriados (INM)</h3>
+                <div class="chart-note">Niños, adolescentes y adultos</div>
+            </div>
+            <div class="chart-container" id="chart-repatriados"></div>
+        </div>
+    </div>
+
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>🛃 Encuentros CBP en frontera EE.UU. – México</h3>
+            <div class="chart-note">Oficina de Aduanas y Protección Fronteriza</div>
+        </div>
+        <div class="chart-container" id="chart-encuentros"></div>
+    </div>
+</div>
+
+<footer>
+    IA-NAMI v9.0.2 · Datos procesados con fuentes oficiales (UAMI, INM, DIF, CBP) · Panel de inteligencia migratoria
+</footer>
+
+<script>
+    (function() {
+        // =====================================================
+        // CARGA DINÁMICA DE DATOS DESDE GITHUB API
+        // =====================================================
+        const repoAPI = "https://api.github.com/repos/OckarLezama/ianami-datos/contents/";
+        let DB = {};  // Aquí se almacenarán todos los datos cargados
+
+        // Función para convertir un array de objetos CSV (con campos numéricos) a formato mensual
+        function toMonthlyMap(data, keyField = 'mes', valueField = null) {
+            const map = {};
+            if (!data) return map;
+            for (const row of data) {
+                const mes = row[keyField];
+                if (!mes) continue;
+                if (valueField) {
+                    map[mes] = parseFloat(row[valueField]) || 0;
+                } else {
+                    // Si no hay valueField, asumimos que el objeto tiene múltiples campos numéricos (ej. total, pv, rein, etc.)
+                    const obj = {};
+                    for (const [k, v] of Object.entries(row)) {
+                        if (k !== keyField && !isNaN(parseFloat(v))) {
+                            obj[k] = parseFloat(v);
+                        }
+                    }
+                    map[mes] = obj;
+                }
+            }
+            return map;
+        }
+
+        // Función para convertir a objeto de top (p.ej. top_nac) desde CSV
+        function toTopMap(data, nameField = 'pais', valueField = 'total') {
+            const map = {};
+            if (!data) return map;
+            for (const row of data) {
+                const name = row[nameField];
+                const val = parseFloat(row[valueField]);
+                if (name && !isNaN(val)) map[name] = val;
+            }
+            return map;
+        }
+
+        // Función principal de carga
+        async function cargarDatosDesdeGitHub() {
+            try {
+                // 1. Listar archivos del repositorio
+                const response = await fetch(repoAPI);
+                if (!response.ok) throw new Error(`Error al listar archivos: ${response.status}`);
+                const files = await response.json();
+                
+                // 2. Filtrar solo archivos CSV
+                const csvFiles = files.filter(f => f.name.toLowerCase().endsWith('.csv'));
+                if (csvFiles.length === 0) throw new Error("No se encontraron archivos CSV en el repositorio.");
+                
+                // 3. Cargar cada CSV en paralelo
+                const loadPromises = csvFiles.map(async (fileItem) => {
+                    const nameBase = fileItem.name.replace('.csv', '');
+                    const rawUrl = fileItem.download_url;
+                    if (!rawUrl) return null;
+                    try {
+                        const data = await d3.csv(rawUrl);
+                        return { name: nameBase, data: data };
+                    } catch (err) {
+                        console.error(`Error cargando ${fileItem.name}:`, err);
+                        return null;
+                    }
+                });
+                
+                const results = await Promise.all(loadPromises);
+                const csvData = {};
+                for (const res of results) {
+                    if (res) csvData[res.name] = res.data;
+                }
+                
+                // 4. Transformar los CSV al formato que espera el resto del código
+                //    Se crea el objeto DB con la misma estructura que tenía originalmente
+                
+                // Rescatados (monthly y top_nac, by_or)
+                if (csvData['Rescatados']) {
+                    DB.rescatados_monthly = toMonthlyMap(csvData['Rescatados'], 'mes', null);
+                    DB.rescatados_top_nac = toTopMap(csvData['Rescatados'], 'nacionalidad', 'total');
+                    // También necesita rescatados_by_or (si existe en otro CSV o derivado)
+                    if (csvData['Rescatados_OR']) DB.rescatados_by_or = toTopMap(csvData['Rescatados_OR'], 'or', 'total');
+                    else {
+                        // Intentar construir desde los datos mensuales? Mejor dejamos vacío.
+                        DB.rescatados_by_or = {};
+                    }
+                }
+                
+                // Presentados
+                if (csvData['Presentados']) {
+                    DB.presentados_monthly = toMonthlyMap(csvData['Presentados'], 'mes', 'total');
+                    DB.presentados_top_nac = toTopMap(csvData['Presentados'], 'nacionalidad', 'total');
+                    DB.presentados_by_or = toTopMap(csvData['Presentados'], 'or', 'total');
+                }
+                
+                // Canalizados
+                if (csvData['Canalizados']) {
+                    DB.can_monthly = toMonthlyMap(csvData['Canalizados'], 'mes', null);
+                    DB.can_top_nac = toTopMap(csvData['Canalizados'], 'nacionalidad', 'total');
+                    DB.can_by_or = toTopMap(csvData['Canalizados'], 'or', 'total');
+                }
+                
+                // Retornados
+                if (csvData['Retornados']) {
+                    DB.retornados_monthly = toMonthlyMap(csvData['Retornados'], 'mes', null);
+                    DB.retornados_top_nac = toTopMap(csvData['Retornados'], 'nacionalidad', 'total');
+                }
+                
+                // Mexicanos repatriados
+                if (csvData['Mexicanos_Recibidos']) {
+                    DB.mx_monthly = toMonthlyMap(csvData['Mexicanos_Recibidos'], 'mes', null);
+                    DB.mx_by_or = toTopMap(csvData['Mexicanos_Recibidos'], 'or', 'total');
+                }
+                
+                // Extranjeros recibidos de EE.UU.
+                if (csvData['Extranjeros_recibidos']) {
+                    DB.ext_monthly = toMonthlyMap(csvData['Extranjeros_recibidos'], 'mes', null);
+                    DB.ext_top_nac = toTopMap(csvData['Extranjeros_recibidos'], 'nacionalidad', 'total');
+                    DB.ext_by_or = toTopMap(csvData['Extranjeros_recibidos'], 'or', 'total');
+                }
+                
+                // Encuentros CBP
+                if (csvData['Encuentros']) {
+                    DB.encuentros_monthly = toMonthlyMap(csvData['Encuentros'], 'mes', null);
+                    DB.encuentros_top_nac = toTopMap(csvData['Encuentros'], 'nacionalidad', 'total');
+                    // Encuentros por ciudad (para el gráfico de barras)
+                    DB.encuentros_by_ciudad = {};
+                    if (csvData['Encuentros_ciudad']) {
+                        for (const row of csvData['Encuentros_ciudad']) {
+                            DB.encuentros_by_ciudad[row.ciudad] = { total: parseFloat(row.total), estado: row.estado };
+                        }
+                    }
+                }
+                
+                // Inadmisiones
+                if (csvData['Inadmisiones']) {
+                    DB.inad_monthly = toMonthlyMap(csvData['Inadmisiones'], 'mes', 'total');
+                    DB.inad_top_nac = toTopMap(csvData['Inadmisiones'], 'nacionalidad', 'total');
+                }
+                
+                // Internaciones
+                if (csvData['Internaciones']) {
+                    DB.internaciones_monthly = toMonthlyMap(csvData['Internaciones'], 'mes', null);
+                    DB.internaciones_top_nac = toTopMap(csvData['Internaciones'], 'nacionalidad', 'total');
+                    if (csvData['Internaciones_via']) {
+                        DB.intern_nac_by_via = { aereo: {}, terrestre: {}, maritimo: {} };
+                        for (const row of csvData['Internaciones_via']) {
+                            const via = row.via;
+                            if (DB.intern_nac_by_via[via]) DB.intern_nac_by_via[via][row.nacionalidad] = parseFloat(row.total);
+                        }
+                    }
+                }
+                
+                // Condición de estancia
+                if (csvData['Condicion_de_Estancia']) {
+                    DB.estancia_monthly = toMonthlyMap(csvData['Condicion_de_Estancia'], 'mes', null);
+                    DB.estancia_top_nac = toTopMap(csvData['Condicion_de_Estancia'], 'nacionalidad', 'total');
+                    DB.estancia_top_or = toTopMap(csvData['Condicion_de_Estancia'], 'or', 'total');
+                    if (csvData['Estancia_nac_type']) {
+                        DB.estancia_nac_by_type = {};
+                        for (const row of csvData['Estancia_nac_type']) {
+                            const tipo = row.tipo;
+                            if (!DB.estancia_nac_by_type[tipo]) DB.estancia_nac_by_type[tipo] = {};
+                            DB.estancia_nac_by_type[tipo][row.nacionalidad] = parseFloat(row.total);
+                        }
+                    }
+                    if (csvData['Estancia_or_type']) {
+                        DB.estancia_or_by_type = {};
+                        for (const row of csvData['Estancia_or_type']) {
+                            const tipo = row.tipo;
+                            if (!DB.estancia_or_by_type[tipo]) DB.estancia_or_by_type[tipo] = {};
+                            DB.estancia_or_by_type[tipo][row.or] = parseFloat(row.total);
+                        }
+                    }
+                }
+                
+                // Motivo de estancia
+                if (csvData['Motivo_de_Estancia']) {
+                    DB.motivo_monthly = toMonthlyMap(csvData['Motivo_de_Estancia'], 'mes', 'total');
+                    DB.motivo_by_motivo = toTopMap(csvData['Motivo_de_Estancia'], 'motivo', 'total');
+                    DB.motivo_top_nac = toTopMap(csvData['Motivo_de_Estancia'], 'nacionalidad', 'total');
+                    DB.motivo_top_or = toTopMap(csvData['Motivo_de_Estancia'], 'or', 'total');
+                    if (csvData['Motivo_nac_motivo']) {
+                        DB.motivo_nac_by_motivo = {};
+                        for (const row of csvData['Motivo_nac_motivo']) {
+                            const mot = row.motivo;
+                            if (!DB.motivo_nac_by_motivo[mot]) DB.motivo_nac_by_motivo[mot] = {};
+                            DB.motivo_nac_by_motivo[mot][row.nacionalidad] = parseFloat(row.total);
+                        }
+                    }
+                    if (csvData['Motivo_or_motivo']) {
+                        DB.motivo_or_by_motivo = {};
+                        for (const row of csvData['Motivo_or_motivo']) {
+                            const mot = row.motivo;
+                            if (!DB.motivo_or_by_motivo[mot]) DB.motivo_or_by_motivo[mot] = {};
+                            DB.motivo_or_by_motivo[mot][row.or] = parseFloat(row.total);
+                        }
+                    }
+                }
+                
+                // Caravanas (histórico y período)
+                if (csvData['Caravanas_2019_2026']) DB.caravanas_all = csvData['Caravanas_2019_2026'];
+                if (csvData['Caravanas_periodoCS']) DB.caravanas = csvData['Caravanas_periodoCS'];
+                
+                // Cinturones de contención (estático desde CSV)
+                if (csvData['Cinturones_Contencion']) {
+                    DB.cinturones = {};
+                    for (const row of csvData['Cinturones_Contencion']) {
+                        const cin = row.cinturon;
+                        if (!DB.cinturones[cin]) DB.cinturones[cin] = [];
+                        DB.cinturones[cin].push(row.estado);
+                    }
+                }
+                
+                // CECOs
+                if (csvData['Centro_Coordinador_Operaciones']) {
+                    DB.cecos = {};
+                    for (const row of csvData['Centro_Coordinador_Operaciones']) {
+                        const ceco = row.ceco;
+                        if (!DB.cecos[ceco]) DB.cecos[ceco] = [];
+                        DB.cecos[ceco].push(row.estado);
+                    }
+                }
+                
+                // Estados frontera
+                if (csvData['Estados_Frontera']) {
+                    DB.estados_frontera = csvData['Estados_Frontera'];
+                }
+                
+                // Rescate por períodos (Sheinbaum/Trump) - opcional, si no se carga, se calculará después
+                // Podemos dejar vacío, el resto del código usará las funciones filterByPeriod que ya están.
+                
+                console.log("✅ Datos cargados desde GitHub:", Object.keys(DB));
+                
+                // Ocultar overlay de carga
+                document.getElementById('loading').style.display = 'none';
+                
+                // Inicializar el dashboard y todas las secciones
+                inicializarDashboard(DB);
+                
+            } catch (error) {
+                console.error("Fallo en la carga de datos:", error);
+                document.getElementById('loading').innerHTML = `<div style="background:red; padding:20px;">Error cargando datos: ${error.message}<br>Revisa la consola o la disponibilidad de los CSV en el repositorio.</div>`;
+            }
+        }
+
 <!DOCTYPE html> 
 <html lang="es">
 <head>
